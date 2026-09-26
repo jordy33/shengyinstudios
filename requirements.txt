@@ -1,0 +1,3 @@
+fonttools==4.62.1
+uharfbuzz==0.56.2
+cairosvg==2.9.1
