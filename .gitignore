@@ -8,6 +8,3 @@ venv/
 # macOS
 .DS_Store
 
-# Generated logo assets (rebuild with `python make_logo.py`)
-logo.svg
-logo.png

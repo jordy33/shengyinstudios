@@ -22,6 +22,8 @@ import cairosvg
 from fontTools.ttLib import TTFont
 from fontTools.pens.svgPathPen import SVGPathPen
 from fontTools.pens.boundsPen import BoundsPen
+from fontTools.pens.transformPen import TransformPen
+from fontTools.misc.transform import Transform
 
 FONT_PATH = 'Salina-SwExtraLightItalic.otf'
 BRAND = 'Shengyin Studios'
@@ -29,12 +31,39 @@ BRAND = 'Shengyin Studios'
 # ---- paleta
 NEGRO = (0.035, 0.033, 0.031)   # negro cálido del fondo
 COBRE = (0.784, 0.506, 0.278)   # #C88147  (anillo)
-ORO  = (0.784, 0.506, 0.278)   # #C88147  (letras)
-# ORO   = (0.878, 0.702, 0.404)   # #E0B367  (letras)
+ORO   = (0.878, 0.702, 0.404)   # #E0B367  (letras)
 
 
 def hexcolor(rgb):
     return '#%02x%02x%02x' % tuple(round(c * 255) for c in rgb)
+
+
+def lighten(rgb, amt):
+    return tuple(min(1.0, c + (1.0 - c) * amt) for c in rgb)
+
+
+def darken(rgb, amt):
+    return tuple(max(0.0, c * (1.0 - amt)) for c in rgb)
+
+
+def metal_gradient(gid, base_rgb, x1, y1, x2, y2):
+    """Gradiente lineal de 5 bandas que simula una superficie metálica
+    curva bajo una fuente de luz: sombra -> color -> brillo -> color ->
+    sombra. userSpaceOnUse para que el barrido de luz sea continuo sobre
+    TODO el logo (anillo + letras comparten el mismo sistema de
+    coordenadas), en vez de que cada letra tenga su propio brillo
+    aislado (que se ve "pegado", no metálico)."""
+    dark = hexcolor(darken(base_rgb, 0.55))
+    mid = hexcolor(base_rgb)
+    light = hexcolor(lighten(base_rgb, 0.65))
+    return f'''<linearGradient id="{gid}" gradientUnits="userSpaceOnUse"
+      x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}">
+      <stop offset="0%"  stop-color="{dark}"/>
+      <stop offset="28%" stop-color="{mid}"/>
+      <stop offset="50%" stop-color="{light}"/>
+      <stop offset="72%" stop-color="{mid}"/>
+      <stop offset="100%" stop-color="{dark}"/>
+    </linearGradient>'''
 
 
 def arc_points(cx, cy, r, a0, a1, steps=400):
@@ -93,6 +122,20 @@ class ShapedText:
         self.glyph_set[name].draw(pen)
         return pen.getCommands()
 
+    def glyph_path_d_transformed(self, name, sx, sy, tx, ty):
+        """Igual que glyph_path_d pero con la transformación (escala +
+        traslado) ya 'horneada' en las coordenadas del path, en vez de
+        ponerla en un atributo transform="" del <path>. Es necesario para
+        que un gradiente userSpaceOnUse aplicado por herencia (fill en el
+        <g> padre) se resuelva en coordenadas globales del canvas y no en
+        el sistema de coordenadas local (diminuto y con Y invertida) de
+        cada glifo — si no, el brillo del metal sale distorsionado y
+        distinto en cada letra."""
+        pen = SVGPathPen(self.glyph_set)
+        t = Transform(sx, 0, 0, sy, tx, ty)
+        self.glyph_set[name].draw(TransformPen(pen, t))
+        return pen.getCommands()
+
     def visual_bounds(self, glyphs):
         """Bounding box REAL de la tinta (incluye swashes que sobresalen
         del cuadro de avance), en unidades de fuente. Esto es lo que hay
@@ -140,24 +183,46 @@ def main():
     x_start = cx - ink_cx_units * scale
     baseline_y = cy + ink_cy_units * scale
 
-    # ---- letras: un <path> por glifo, posicionado con transform
+    # ---- letras: un <path> por glifo, YA en coordenadas finales del canvas
+    # (transformación horneada, ver glyph_path_d_transformed)
     letter_paths = []
     for g in glyphs:
-        d = sal.glyph_path_d(g['name'])
-        if not d:
-            continue
         gx = x_start + g['x'] * scale
         gy = baseline_y - g['y'] * scale
-        letter_paths.append(
-            f'<path transform="translate({gx:.2f},{gy:.2f}) scale({scale:.6f},{-scale:.6f})" d="{d}"/>'
-        )
+        d = sal.glyph_path_d_transformed(g['name'], scale, -scale, gx, gy)
+        if not d:
+            continue
+        letter_paths.append(f'<path d="{d}"/>')
 
     ring_d = ring_path_d(cx, cy, r, slot_deg, center_deg=0.0)
 
+    # Cada elemento (anillo, texto) recibe su PROPIO gradiente, escalado a
+    # su propio tamaño, pero con la misma dirección de luz (diagonal a 45°)
+    # para que se sienta como una sola fuente de luz consistente. Si se usa
+    # un único gradiente dimensionado para el radio del anillo, el texto
+    # (mucho más angosto) queda atrapado en la banda media y se ve apagado
+    # en vez de brillar.
+    ring_x1, ring_y1 = cx - r, cy - r
+    ring_x2, ring_y2 = cx + r, cy + r
+
+    text_left_px = x_start + xmin * scale
+    text_right_px = x_start + xmax * scale
+    half_tw = (text_right_px - text_left_px) / 2.0
+    text_x1, text_y1 = cx - half_tw, cy - half_tw
+    text_x2, text_y2 = cx + half_tw, cy + half_tw
+
+    grad_defs = (
+        metal_gradient('copperMetal', COBRE, ring_x1, ring_y1, ring_x2, ring_y2) +
+        metal_gradient('goldMetal', ORO, text_x1, text_y1, text_x2, text_y2)
+    )
+
     svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}">
+  <defs>
+    {grad_defs}
+  </defs>
   <rect x="0" y="0" width="{W}" height="{H}" fill="{hexcolor(NEGRO)}"/>
-  <path d="{ring_d}" fill="none" stroke="{hexcolor(COBRE)}" stroke-width="{ring_w}" stroke-linecap="round"/>
-  <g fill="{hexcolor(ORO)}">
+  <path d="{ring_d}" fill="none" stroke="url(#copperMetal)" stroke-width="{ring_w}" stroke-linecap="round"/>
+  <g fill="url(#goldMetal)">
     {''.join(letter_paths)}
   </g>
 </svg>'''
